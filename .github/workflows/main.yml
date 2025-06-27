@@ -53,7 +53,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          android-tools-fsutils \
+          android-sdk-libsparse-utils \
           tar \
           xz-utils \
           liblz4-tool \
