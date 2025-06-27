@@ -1,4 +1,4 @@
-name: Android Super Partition Repack (Corrected Download Logic)
+name: Android Super Partition Repack
 
 on:
   workflow_dispatch:
