@@ -1,14 +1,10 @@
-name: Android Super Partition Repack (Final Corrected Method)
+name: Android Super Partition Repack (Final, Reliable Method)
 
 on:
   workflow_dispatch:
     inputs:
-      device_model:
-        description: 'Device Model (e.g., SM-G998B)'
-        required: true
-        type: string
-      device_csc:
-        description: 'Device Region/CSC (e.g., EUX)'
+      stock_firmware_url:
+        description: 'URL to the stock firmware (Direct HTTP, MEGA.nz, etc.). Find the real link manually.'
         required: true
         type: string
       custom_system_url:
@@ -49,16 +45,12 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Python environment
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-
-    - name: Install Dependencies and Samloader
+    - name: Install Dependencies
       run: |
-        echo "==> Installing base OS dependencies..."
+        echo "==> Installing required OS packages..."
         sudo apt-get update
         sudo apt-get install -y \
+          android-tools-fsutils \
           android-sdk-libsparse-utils \
           tar \
           xz-utils \
@@ -68,18 +60,8 @@ jobs:
           file \
           wget \
           curl \
-          git
-        
-        echo "==> Creating Python virtual environment..."
-        python -m venv venv
-        
-        echo "==> Installing samloader from git..."
-        venv/bin/python -m pip install git+https://github.com/samloader/samloader.git
-        
-        if [ ! -f "venv/bin/samloader" ]; then
-          echo "✗ CRITICAL ERROR: samloader failed to install." && exit 1
-        fi
-        echo "✓ samloader installed successfully."
+          megatools # For MEGA.nz support
+        echo "✓ Dependencies installed."
 
     - name: Verify repacksuper.sh exists
       run: |
@@ -92,46 +74,42 @@ jobs:
     - name: Download and Extract Stock Firmware
       run: |
         cd work
-        # STEP 1: Check for the latest firmware version using the CORRECT argument order.
-        echo "==> Checking for the latest firmware version..."
-        LATEST_FW_VERSION=$(../venv/bin/samloader -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" checkupdate)
+        FIRMWARE_URL="${{ github.event.inputs.stock_firmware_url }}"
         
-        if [ -z "$LATEST_FW_VERSION" ]; then
-          echo "✗ CRITICAL ERROR: Could not fetch firmware version for ${{ github.event.inputs.device_model }}/${{ github.event.inputs.device_csc }}." && exit 1
+        # Check if the URL is a MEGA.nz link and use the correct tool
+        if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then
+          echo "==> MEGA.nz link detected. Downloading with megatools..."
+          megadl "$FIRMWARE_URL"
+        else
+          echo "==> Direct HTTP link detected. Downloading with wget..."
+          # Use --content-disposition to handle generic server links that don't have a filename in the URL
+          wget --content-disposition "$FIRMWARE_URL"
         fi
-        echo "✓ Latest firmware version found: $LATEST_FW_VERSION"
         
-        # STEP 2: Download the encrypted firmware file.
-        echo "==> Downloading encrypted firmware..."
-        ../venv/bin/samloader -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" download -v "$LATEST_FW_VERSION" -O .
+        # Verify that a file was downloaded, regardless of the method
+        if ! ls *.zip 1> /dev/null 2>&1; then
+          echo "✗ CRITICAL ERROR: Failed to download stock firmware, or the downloaded file was not a .zip archive."
+          exit 1
+        fi
         
-        ENC_FILE=$(ls *.zip.enc* | head -n 1)
-        if [ -z "$ENC_FILE" ]; then echo "✗ Error: Encrypted firmware file (.enc) not found after download." && exit 1; fi
-        echo "✓ Encrypted file downloaded: $ENC_FILE"
+        FIRMWARE_ZIP=$(ls *.zip | head -n 1)
+        echo "✓ Stock firmware downloaded successfully: $FIRMWARE_ZIP"
         
-        # STEP 3: Decrypt the firmware file. This is the critical missing step.
-        echo "==> Decrypting firmware file..."
-        ENC_VER=$(echo "$ENC_FILE" | sed 's/.*\.enc//') # Get encryption version (2 or 4) from filename
-        DECRYPTED_ZIP="${ENC_FILE%.enc*}"
-        ../venv/bin/samloader -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" decrypt -v "$LATEST_FW_VERSION" -V "$ENC_VER" -i "$ENC_FILE" -o "$DECRYPTED_ZIP"
-        
-        if [ ! -f "$DECRYPTED_ZIP" ]; then echo "✗ Error: Failed to decrypt the firmware file." && exit 1; fi
-        echo "✓ Firmware decrypted to: $DECRYPTED_ZIP"
-        
-        # STEP 4: Unzip the final, decrypted firmware archive.
         echo "==> Unzipping firmware package..."
-        unzip -o "$DECRYPTED_ZIP"
+        unzip -o "$FIRMWARE_ZIP"
         
         AP_FILE=$(find . -name "AP_*.tar.md5" | head -n 1)
-        if [ -z "$AP_FILE" ]; then echo "✗ Error: AP file not found in firmware." && ls -lR && exit 1; fi
+        if [ -z "$AP_FILE" ]; then echo "✗ Error: AP file not found in the unzipped firmware." && ls -lR && exit 1; fi
+        echo "✓ Found AP file: $AP_FILE"
         
         echo "==> Extracting and preparing super.img..."
         tar -xvf "$AP_FILE" super.img.sparse.lz4
-        if [ ! -f "super.img.sparse.lz4" ]; then echo "✗ Error: Could not extract super.img.sparse.lz4." && exit 1; fi
+        if [ ! -f "super.img.sparse.lz4" ]; then echo "✗ Error: Could not extract super.img.sparse.lz4 from the AP file." && exit 1; fi
+        
         lz4 -d super.img.sparse.lz4 stock_super_sparse.img
         simg2img stock_super_sparse.img stock_super.img
         
-        if [ ! -f "stock_super.img" ]; then echo "✗ Error: Failed to create raw stock_super.img" && exit 1; fi
+        if [ ! -f "stock_super.img" ]; then echo "✗ Error: Failed to create raw stock_super.img." && exit 1; fi
         echo "✓ stock_super.img prepared successfully!"
 
     - name: Download and Prepare Custom system.img
@@ -187,7 +165,7 @@ jobs:
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: repacked-super-${{ github.event.inputs.device_model }}-${{ github.event.inputs.device_csc }}
+        name: repacked-super-img
         path: |
           work/repacked_super.img
           work/repacked_super.tar
@@ -197,7 +175,7 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: failure-logs-${{ github.event.inputs.device_model }}
+        name: failure-logs
         path: work/
         retention-days: 1
 
@@ -206,9 +184,9 @@ jobs:
         echo "======================================================="
         echo "  Android Super Partition Repack Complete"
         echo "======================================================="
-        echo "✓ Stock firmware processed for ${{ github.event.inputs.device_model }}"
+        echo "✓ Stock firmware downloaded from your URL and processed"
         echo "✓ Custom ROM integrated"
         echo "✓ New super.img created and packaged"
         echo ""
-        echo "Download the 'repacked-super-...' artifact below."
+        echo "Download the 'repacked-super-img' artifact below."
         echo "======================================================="
