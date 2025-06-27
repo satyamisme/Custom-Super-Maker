@@ -1,10 +1,14 @@
-name: Android Super Partition Repack
+name: Android Super Partition Repack (with Auto-Firmware Download)
 
 on:
   workflow_dispatch:
     inputs:
-      stock_super_url:
-        description: 'Stock super.img download URL (must be wget-able)'
+      device_model:
+        description: 'Device model (e.g., SM-G998B)'
+        required: true
+        type: string
+      device_region:
+        description: 'Device region/CSC (e.g., EUX)'
         required: true
         type: string
       custom_system_url:
@@ -58,140 +62,141 @@ jobs:
           jq \
           file \
           wget \
-          curl
-        
-        # Install simg2img if not available
-        if ! command -v simg2img &> /dev/null; then
-          echo "Installing simg2img from android-tools-fsutils"
-          sudo apt-get install -y android-sdk-libsparse-utils || true
-        fi
-        
-        # Verify tools are available
-        echo "Checking required tools..."
-        for tool in simg2img tar unxz lz4 unzip gzip jq file wget; do
-          if command -v $tool &> /dev/null; then
-            echo "✓ $tool is available"
-          else
-            echo "✗ $tool is missing"
+          curl \
+          python3 \
+          python3-pip
+          
+        echo "Installing samloader-ng..."
+        pip3 install samloader-ng
+
+        echo "Verifying tools..."
+        for tool in simg2img tar unxz lz4 unzip gzip jq file wget samloader; do
+          if ! command -v $tool &> /dev/null; then
+            echo "✗ Error: $tool is missing and could not be installed."
             exit 1
           fi
+          echo "✓ $tool is available"
         done
 
     - name: Verify repacksuper.sh exists
       run: |
         if [ ! -f "./repacksuper.sh" ]; then
           echo "Error: repacksuper.sh not found in repository root"
-          echo "Please ensure the script is present in the repository"
           exit 1
         fi
         chmod +x ./repacksuper.sh
 
     - name: Create working directory
-      run: |
-        mkdir -p work
-        cd work
+      run: mkdir -p work
 
-    - name: Download stock super.img
+    - name: Download Stock Firmware
+      working-directory: ./work
       run: |
-        cd work
-        echo "Downloading stock super.img from: ${{ github.event.inputs.stock_super_url }}"
-        wget -O stock_super.img "${{ github.event.inputs.stock_super_url }}"
+        echo "Downloading latest stock firmware for Model: ${{ github.event.inputs.device_model }}, Region: ${{ github.event.inputs.device_region }}"
+        samloader download --model "${{ github.event.inputs.device_model }}" --region "${{ github.event.inputs.device_region }}" -o . -v
         
         # Verify download
-        if [ ! -f "stock_super.img" ]; then
-          echo "Error: Failed to download stock super.img"
+        if ! ls *.zip 1> /dev/null 2>&1; then
+          echo "Error: Failed to download firmware. Please check the model and region."
+          exit 1
+        fi
+        echo "Firmware downloaded successfully."
+        ls -lh *.zip
+
+    - name: Extract Firmware and locate super.img
+      working-directory: ./work
+      run: |
+        echo "Extracting firmware archive..."
+        FIRMWARE_ZIP=$(ls *.zip)
+        unzip "$FIRMWARE_ZIP"
+        
+        # Verify AP file exists
+        if ! ls AP_*.tar.md5 1> /dev/null 2>&1; then
+          echo "Error: AP file (AP_*.tar.md5) not found in the firmware archive."
           exit 1
         fi
         
-        echo "Stock super.img downloaded successfully"
+        AP_FILE=$(ls AP_*.tar.md5)
+        echo "Found AP file: $AP_FILE"
+        echo "Extracting AP archive to find super.img..."
+        tar -xf "$AP_FILE" super.img.lz4
+        
+        # Verify super.img.lz4 exists
+        if [ ! -f "super.img.lz4" ]; then
+          echo "Error: super.img.lz4 not found in the AP archive."
+          ls -la
+          exit 1
+        fi
+        
+        echo "Decompressing super.img.lz4..."
+        lz4 -d super.img.lz4 stock_super.img
+        
+        # Verify stock_super.img exists
+        if [ ! -f "stock_super.img" ]; then
+          echo "Error: Failed to decompress super.img.lz4"
+          exit 1
+        fi
+        
+        echo "✓ stock_super.img successfully extracted and prepared."
         ls -lh stock_super.img
 
     - name: Download custom system.img
+      working-directory: ./work
       run: |
-        cd work
         echo "Downloading custom system.img from: ${{ github.event.inputs.custom_system_url }}"
         wget -O custom_system.img "${{ github.event.inputs.custom_system_url }}"
         
-        # Verify download
         if [ ! -f "custom_system.img" ]; then
           echo "Error: Failed to download custom system.img"
           exit 1
         fi
         
-        echo "Custom system.img downloaded successfully"
+        echo "Custom system.img downloaded successfully."
         ls -lh custom_system.img
 
     - name: Prepare repacksuper.sh flags
       id: prepare_flags
       run: |
         FLAGS=""
-        
-        if [ "${{ github.event.inputs.empty_product }}" == "true" ]; then
-          FLAGS="$FLAGS -e"
-        fi
-        
-        if [ "${{ github.event.inputs.empty_system_ext }}" == "true" ]; then
-          FLAGS="$FLAGS -x"
-        fi
-        
-        if [ "${{ github.event.inputs.silent_mode }}" == "true" ]; then
-          FLAGS="$FLAGS -s"
-        fi
-        
-        if [ "${{ github.event.inputs.writable }}" == "true" ]; then
-          FLAGS="$FLAGS -w"
-        fi
-        
-        if [ "${{ github.event.inputs.purge_all }}" == "true" ]; then
-          FLAGS="$FLAGS -p"
-        fi
-        
+        if [ "${{ github.event.inputs.empty_product }}" == "true" ]; then FLAGS="$FLAGS -e"; fi
+        if [ "${{ github.event.inputs.empty_system_ext }}" == "true" ]; then FLAGS="$FLAGS -x"; fi
+        if [ "${{ github.event.inputs.silent_mode }}" == "true" ]; then FLAGS="$FLAGS -s"; fi
+        if [ "${{ github.event.inputs.writable }}" == "true" ]; then FLAGS="$FLAGS -w"; fi
+        if [ "${{ github.event.inputs.purge_all }}" == "true" ]; then FLAGS="$FLAGS -p"; fi
         echo "flags=$FLAGS" >> $GITHUB_OUTPUT
         echo "Prepared flags: $FLAGS"
 
     - name: Run repacksuper.sh
+      working-directory: ./work
       run: |
-        cd work
         echo "Running repacksuper.sh with flags: ${{ steps.prepare_flags.outputs.flags }}"
-        echo "Source: stock_super.img"
-        echo "New system: custom_system.img"
-        echo "Output: repacked_super.img"
-        
-        # Set working directory for the script
-        export WORK_DIR="$(pwd)"
-        
-        # Run the script
         ../repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} \
-          -r "$WORK_DIR" \
+          -r "$(pwd)" \
           stock_super.img \
           custom_system.img \
           repacked_super.img
-        
-        echo "Repacksuper.sh completed"
+          
+        echo "Repacksuper.sh completed."
 
     - name: Verify output
+      working-directory: ./work
       run: |
-        cd work
         if [ -f "repacked_super.img" ]; then
           echo "✓ Repacked super.img created successfully"
           ls -lh repacked_super.img
-          
-          # Check file type
           file repacked_super.img
-          
-          # Calculate checksums
           echo "MD5: $(md5sum repacked_super.img | cut -d' ' -f1)"
           echo "SHA256: $(sha256sum repacked_super.img | cut -d' ' -f1)"
         else
-          echo "✗ Error: repacked_super.img not found"
+          echo "✗ Error: repacked_super.img not found. The script may have failed."
           echo "Listing work directory contents:"
-          ls -la
+          ls -lA
           exit 1
         fi
 
-    - name: Create tar archive (optional)
+    - name: Create tar archive for Odin
+      working-directory: ./work
       run: |
-        cd work
         if [ -f "repacked_super.img" ]; then
           echo "Creating tar archive for Odin flashing..."
           tar -cvf repacked_super.tar repacked_super.img
@@ -199,44 +204,44 @@ jobs:
           ls -lh repacked_super.tar
         fi
 
-    - name: Upload repacked super.img as artifact
+    - name: Upload Repacked Files as Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: repacked-super-img
+        name: repacked-super-files
         path: |
           work/repacked_super.img
           work/repacked_super.tar
         retention-days: 7
         compression-level: 0
 
-    - name: Upload logs and working files
+    - name: Upload Logs and Working Files
       uses: actions/upload-artifact@v4
       if: always()
       with:
         name: repack-logs-and-files
         path: |
-          work/repacksuper/
+          work/
         retention-days: 3
         compression-level: 6
 
     - name: Display completion message
       run: |
-        echo "=========================================="
+        echo "======================================================="
         echo "Android Super Partition Repack Complete!"
-        echo "=========================================="
+        echo "======================================================="
         echo ""
-        echo "✓ Stock super.img downloaded and processed"
+        echo "✓ Stock firmware for ${{ github.event.inputs.device_model }} (${{ github.event.inputs.device_region }}) downloaded and processed"
         echo "✓ Custom system.img integrated"
-        echo "✓ New super.img created successfully"
+        echo "✓ New super.img created and packaged successfully"
         echo ""
-        echo "Files available in artifacts:"
-        echo "- repacked_super.img (for Heimdall flashing)"
+        echo "Files available in the 'repacked-super-files' artifact:"
+        echo "- repacked_super.img (for Heimdall/fastboot flashing)"
         echo "- repacked_super.tar (for Odin flashing)"
         echo ""
-        echo "Download the artifacts and flash using:"
+        echo "Download the artifacts and flash using your preferred tool:"
         echo "1. Heimdall (Linux): heimdall flash --SUPER repacked_super.img"
-        echo "2. Odin (Windows): Flash repacked_super.tar to AP slot"
+        echo "2. Odin (Windows): Flash repacked_super.tar to the AP slot"
         echo ""
         echo "⚠️  Important: Always backup your device before flashing!"
-        echo "⚠️  Ensure your device is in Download mode before flashing"
-        echo "=========================================="
+        echo "⚠️  Ensure your device is in Download/Bootloader mode."
+        echo "======================================================="
