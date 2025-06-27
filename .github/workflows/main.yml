@@ -103,7 +103,7 @@ jobs:
         
         echo "==> Extracting and preparing super.img..."
         tar -xvf "$AP_FILE" super.img.lz4
-        if [ ! -f "super.img.sparse.lz4" ]; then echo "✗ Error: Could not extract super.img.sparse.lz4 from the AP file." && exit 1; fi
+        if [ ! -f "super.img.lz4" ]; then echo "✗ Error: Could not extract super.img.lz4 from the AP file." && exit 1; fi
         
         lz4 -d super.img.lz4 stock_super_sparse.img
         simg2img stock_super_sparse.img stock_super.img
