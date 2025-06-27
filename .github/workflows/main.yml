@@ -1,4 +1,4 @@
-name: Android Super Partition Repack
+name: Android Super Partition Repack (Final Corrected Method)
 
 on:
   workflow_dispatch:
@@ -77,8 +77,7 @@ jobs:
         venv/bin/python -m pip install git+https://github.com/samloader/samloader.git
         
         if [ ! -f "venv/bin/samloader" ]; then
-          echo "✗ CRITICAL ERROR: samloader failed to install."
-          exit 1
+          echo "✗ CRITICAL ERROR: samloader failed to install." && exit 1
         fi
         echo "✓ samloader installed successfully."
 
@@ -93,36 +92,42 @@ jobs:
     - name: Download and Extract Stock Firmware
       run: |
         cd work
-        # STEP 1: Check for the latest firmware version first.
+        # STEP 1: Check for the latest firmware version using the CORRECT argument order.
         echo "==> Checking for the latest firmware version..."
-        LATEST_FW_VERSION=$(../venv/bin/samloader checkupdate -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}")
+        LATEST_FW_VERSION=$(../venv/bin/samloader -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" checkupdate)
         
         if [ -z "$LATEST_FW_VERSION" ]; then
-          echo "✗ CRITICAL ERROR: Could not fetch the latest firmware version for ${{ github.event.inputs.device_model }}/${{ github.event.inputs.device_csc }}."
-          exit 1
+          echo "✗ CRITICAL ERROR: Could not fetch firmware version for ${{ github.event.inputs.device_model }}/${{ github.event.inputs.device_csc }}." && exit 1
         fi
         echo "✓ Latest firmware version found: $LATEST_FW_VERSION"
         
-        # STEP 2: Use the fetched version string with the required -v flag to download.
-        echo "==> Downloading firmware version $LATEST_FW_VERSION..."
-        ../venv/bin/samloader download -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" -v "$LATEST_FW_VERSION" -O .
+        # STEP 2: Download the encrypted firmware file.
+        echo "==> Downloading encrypted firmware..."
+        ../venv/bin/samloader -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" download -v "$LATEST_FW_VERSION" -O .
         
-        FIRMWARE_ZIP=$(ls *.zip | head -n 1)
-        if [ -z "$FIRMWARE_ZIP" ]; then echo "✗ Error: Firmware ZIP not found after download." && exit 1; fi
-        echo "✓ Firmware downloaded: $FIRMWARE_ZIP"
+        ENC_FILE=$(ls *.zip.enc* | head -n 1)
+        if [ -z "$ENC_FILE" ]; then echo "✗ Error: Encrypted firmware file (.enc) not found after download." && exit 1; fi
+        echo "✓ Encrypted file downloaded: $ENC_FILE"
         
+        # STEP 3: Decrypt the firmware file. This is the critical missing step.
+        echo "==> Decrypting firmware file..."
+        ENC_VER=$(echo "$ENC_FILE" | sed 's/.*\.enc//') # Get encryption version (2 or 4) from filename
+        DECRYPTED_ZIP="${ENC_FILE%.enc*}"
+        ../venv/bin/samloader -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" decrypt -v "$LATEST_FW_VERSION" -V "$ENC_VER" -i "$ENC_FILE" -o "$DECRYPTED_ZIP"
+        
+        if [ ! -f "$DECRYPTED_ZIP" ]; then echo "✗ Error: Failed to decrypt the firmware file." && exit 1; fi
+        echo "✓ Firmware decrypted to: $DECRYPTED_ZIP"
+        
+        # STEP 4: Unzip the final, decrypted firmware archive.
         echo "==> Unzipping firmware package..."
-        unzip -o "$FIRMWARE_ZIP"
+        unzip -o "$DECRYPTED_ZIP"
         
         AP_FILE=$(find . -name "AP_*.tar.md5" | head -n 1)
         if [ -z "$AP_FILE" ]; then echo "✗ Error: AP file not found in firmware." && ls -lR && exit 1; fi
-        echo "✓ Found AP file: $AP_FILE"
         
-        echo "==> Extracting super.img from AP file..."
+        echo "==> Extracting and preparing super.img..."
         tar -xvf "$AP_FILE" super.img.sparse.lz4
         if [ ! -f "super.img.sparse.lz4" ]; then echo "✗ Error: Could not extract super.img.sparse.lz4." && exit 1; fi
-        
-        echo "==> Decompressing and preparing stock_super.img..."
         lz4 -d super.img.sparse.lz4 stock_super_sparse.img
         simg2img stock_super_sparse.img stock_super.img
         
@@ -132,7 +137,7 @@ jobs:
     - name: Download and Prepare Custom system.img
       run: |
         cd work
-        echo "==> Downloading custom ROM package from: ${{ github.event.inputs.custom_system_url }}"
+        echo "==> Downloading custom ROM package..."
         wget -O custom_rom_package "${{ github.event.inputs.custom_system_url }}"
         if [ ! -s "custom_rom_package" ]; then echo "✗ Error: Failed to download custom ROM." && exit 1; fi
         
