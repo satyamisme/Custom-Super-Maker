@@ -53,6 +53,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
+          android-tools-fsutils \
           android-sdk-libsparse-utils \
           tar \
           xz-utils \
@@ -65,14 +66,12 @@ jobs:
           curl \
           python3-pip
         
-        pip install samfw-tool
+        # Install the firmware download tool from PyPI
+        pip install samloader
         
-        if ! command -v simg2img &> /dev/null; then
-          sudo apt-get install -y android-sdk-libsparse-utils || true
-        fi
-        
+        # Verify all tools are now available
         echo "Checking required tools..."
-        for tool in simg2img tar unxz lz4 unzip gzip jq file wget samfw-tool; do
+        for tool in simg2img tar unxz lz4 unzip gzip jq file wget samloader; do
           if command -v $tool &> /dev/null; then
             echo "✓ $tool is available"
           else
@@ -94,10 +93,10 @@ jobs:
       run: |
         cd work
         echo "Downloading latest stock firmware for Model: ${{ github.event.inputs.device_model }}, Region: ${{ github.event.inputs.device_csc }}"
-        samfw-tool --model "${{ github.event.inputs.device_model }}" --region "${{ github.event.inputs.device_csc }}" --download --verbose
+        samloader download -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" -V -O .
         
         FIRMWARE_ZIP=$(ls *.zip | head -n 1)
-        if [ -z "$FIRMWARE_ZIP" ]; then echo "✗ Error: Firmware ZIP file not found." && exit 1; fi
+        if [ -z "$FIRMWARE_ZIP" ]; then echo "✗ Error: Firmware ZIP file not found after download." && exit 1; fi
         echo "✓ Firmware downloaded: $FIRMWARE_ZIP"
         
         echo "==> Unzipping firmware package..."
