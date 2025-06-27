@@ -49,12 +49,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20' # Using a stable LTS version of Node.js
-
-    - name: Install required dependencies
+    - name: Install Dependencies and Firmware Downloader
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -69,14 +64,19 @@ jobs:
           wget \
           curl
         
-        # Install the firmware download tool using Node Package Manager (npm)
-        echo "==> Installing samfirm.js..."
-        npm install -g samfirm.js
+        # Download and install a reliable, pre-compiled firmware downloader (Bifrost)
+        echo "==> Downloading bifrost-cli..."
+        BIFROST_URL=$(curl -s https://api.github.com/repos/Qt-Project-Praha/Bifrost/releases/latest | jq -r ".assets[] | select(.name | test(\"bifrost-cli-linux-x86_64$\")) | .browser_download_url")
+        if [ -z "$BIFROST_URL" ]; then echo "✗ Error: Could not find bifrost-cli download URL." && exit 1; fi
+        
+        echo "Downloading from: $BIFROST_URL"
+        curl -L -o bifrost-cli "$BIFROST_URL"
+        sudo mv bifrost-cli /usr/local/bin/bifrost-cli
+        sudo chmod +x /usr/local/bin/bifrost-cli
         
         # Verify all tools are now available
         echo "==> Checking required tools..."
-        # samfirm.js creates an executable named 'samfirm'
-        for tool in simg2img tar unxz lz4 unzip gzip jq file wget samfirm; do
+        for tool in simg2img tar unxz lz4 unzip gzip jq file wget bifrost-cli; do
           if command -v $tool &> /dev/null; then
             echo "✓ $tool is available"
           else
@@ -86,9 +86,7 @@ jobs:
 
     - name: Verify repacksuper.sh exists
       run: |
-        if [ ! -f "./repacksuper.sh" ]; then
-          echo "Error: repacksuper.sh not found in repository root" && exit 1
-        fi
+        if [ ! -f "./repacksuper.sh" ]; then echo "Error: repacksuper.sh not found in repository root" && exit 1; fi
         chmod +x ./repacksuper.sh
 
     - name: Create working directory
@@ -98,15 +96,15 @@ jobs:
       run: |
         cd work
         echo "Downloading latest stock firmware for Model: ${{ github.event.inputs.device_model }}, Region: ${{ github.event.inputs.device_csc }}"
-        # Execute the samfirm.js command
-        samfirm -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}"
+        # Execute the bifrost-cli command
+        bifrost-cli -d "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" --download
         
         FIRMWARE_ZIP=$(ls *.zip | head -n 1)
         if [ -z "$FIRMWARE_ZIP" ]; then echo "✗ Error: Firmware ZIP file not found after download." && exit 1; fi
         echo "✓ Firmware downloaded: $FIRMWARE_ZIP"
         
         echo "==> Unzipping firmware package..."
-        unzip "$FIRMWARE_ZIP"
+        unzip -o "$FIRMWARE_ZIP"
         
         AP_FILE=$(find . -name "AP_*.tar.md5" | head -n 1)
         if [ -z "$AP_FILE" ]; then echo "✗ Error: AP file not found in firmware." && ls -lR && exit 1; fi
@@ -114,12 +112,7 @@ jobs:
         
         echo "==> Extracting super.img from AP file..."
         tar -xvf "$AP_FILE" super.img.sparse.lz4
-        if [ ! -f "super.img.sparse.lz4" ]; then 
-          echo "✗ Error: Could not extract super.img.sparse.lz4."
-          echo "Listing contents of AP file to debug:"
-          tar -tvf "$AP_FILE"
-          exit 1
-        fi
+        if [ ! -f "super.img.sparse.lz4" ]; then echo "✗ Error: Could not extract super.img.sparse.lz4." && exit 1; fi
         
         echo "==> Decompressing and preparing stock_super.img..."
         lz4 -d super.img.sparse.lz4 stock_super_sparse.img
@@ -129,54 +122,28 @@ jobs:
         echo "✓ stock_super.img prepared successfully!"
         ls -lh stock_super.img
 
-    # ... (The rest of the steps remain the same as they are correct) ...
-
     - name: Download and Prepare Custom system.img
       run: |
         cd work
         echo "Downloading custom ROM package from: ${{ github.event.inputs.custom_system_url }}"
-        wget -O custom_rom_package "${{ github.event.inputs.custom_system_url }}"
+        wget --content-disposition -O custom_rom_package "${{ github.event.inputs.custom_system_url }}"
         if [ ! -s "custom_rom_package" ]; then echo "✗ Error: Failed to download custom ROM or file is empty." && exit 1; fi
         echo "✓ Custom ROM package downloaded."
         ls -lh custom_rom_package
-
-        echo "==> Identifying and processing custom ROM file type..."
         FILE_TYPE=$(file -b custom_rom_package)
         echo "File type detected: $FILE_TYPE"
-
         case "$FILE_TYPE" in
-          *"XZ compressed data"*)
-            echo "==> Decompressing XZ archive..."
-            mv custom_rom_package custom_system.img.xz
-            unxz custom_system.img.xz
-            ;;
-          *"gzip compressed data"*)
-            echo "==> Decompressing GZIP archive..."
-            mv custom_rom_package custom_system.img.gz
-            gunzip custom_system.img.gz
-            ;;
+          *"XZ compressed data"*) mv custom_rom_package custom_system.img.xz; unxz custom_system.img.xz ;;
+          *"gzip compressed data"*) mv custom_rom_package custom_system.img.gz; gunzip custom_system.img.gz ;;
           *"Zip archive data"*)
-            echo "==> Decompressing ZIP archive..."
             unzip -o custom_rom_package
             SYSTEM_IMG_FILE=$(find . -maxdepth 1 -name "system.img" -o -name "system.raw.img" | head -n 1)
             if [ -z "$SYSTEM_IMG_FILE" ]; then echo "✗ Error: system.img not found in ZIP." && ls -lR && exit 1; fi
-            mv "$SYSTEM_IMG_FILE" custom_system.img
-            ;;
-          *"Android sparse image"*)
-            echo "==> Converting Android sparse image to raw image..."
-            mv custom_rom_package custom_system_sparse.img
-            simg2img custom_system_sparse.img custom_system.img
-            ;;
-          *"ext4 filesystem data"*)
-            echo "==> Renaming raw ext4 image..."
-            mv custom_rom_package custom_system.img
-            ;;
-          *)
-            echo "✗ Error: Unsupported file type: $FILE_TYPE"
-            exit 1
-            ;;
+            mv "$SYSTEM_IMG_FILE" custom_system.img ;;
+          *"Android sparse image"*) mv custom_rom_package c_sparse.img; simg2img c_sparse.img custom_system.img ;;
+          *"ext4 filesystem data"*) mv custom_rom_package custom_system.img ;;
+          *) echo "✗ Error: Unsupported file type: $FILE_TYPE"; exit 1 ;;
         esac
-
         if [ ! -f "custom_system.img" ]; then echo "✗ Error: custom_system.img not created." && exit 1; fi
         echo "✓ Custom system.img prepared successfully!"
         ls -lh custom_system.img
@@ -197,36 +164,22 @@ jobs:
       run: |
         cd work
         echo "Running repacksuper.sh with flags: ${{ steps.prepare_flags.outputs.flags }}"
-        ../repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} \
-          -r "$(pwd)" \
-          stock_super.img \
-          custom_system.img \
-          repacked_super.img
+        ../repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} -r "$(pwd)" stock_super.img custom_system.img repacked_super.img
         echo "Repacksuper.sh completed"
 
-    - name: Verify output
+    - name: Verify output and Create Tarball
       run: |
         cd work
-        if [ -f "repacked_super.img" ]; then
-          echo "✓ Repacked super.img created successfully"
-          ls -lh repacked_super.img
-          file repacked_super.img
-        else
-          echo "✗ Error: repacked_super.img not found."
-          ls -la && exit 1
-        fi
+        if [ ! -f "repacked_super.img" ]; then echo "✗ Error: repacked_super.img not found." && ls -la && exit 1; fi
+        echo "✓ Repacked super.img created successfully"
+        ls -lh repacked_super.img
+        file repacked_super.img
+        echo "Creating tar archive for Odin flashing..."
+        tar -cvf repacked_super.tar repacked_super.img
+        echo "✓ Tar archive created: repacked_super.tar"
+        ls -lh repacked_super.tar
 
-    - name: Create tar archive for Odin
-      run: |
-        cd work
-        if [ -f "repacked_super.img" ]; then
-          echo "Creating tar archive for Odin flashing..."
-          tar -cvf repacked_super.tar repacked_super.img
-          echo "✓ Tar archive created: repacked_super.tar"
-          ls -lh repacked_super.tar
-        fi
-
-    - name: Upload Repacked Super Image Artifacts
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: repacked-super-${{ github.event.inputs.device_model }}-${{ github.event.inputs.device_csc }}
@@ -234,32 +187,27 @@ jobs:
           work/repacked_super.img
           work/repacked_super.tar
         retention-days: 7
-        compression-level: 0
 
-    - name: Upload logs and full working directory
+    - name: Upload logs (on failure)
+      if: failure()
       uses: actions/upload-artifact@v4
-      if: always()
       with:
-        name: repack-logs-${{ github.event.inputs.device_model }}-${{ github.event.inputs.device_csc }}
+        name: logs-${{ github.event.inputs.device_model }}-${{ github.event.inputs.device_csc }}
         path: work/
-        retention-days: 3
+        retention-days: 1
 
     - name: Display completion message
       run: |
         echo "======================================================="
         echo "  Android Super Partition Repack Complete!"
         echo "======================================================="
-        echo "✓ Stock firmware for ${{ github.event.inputs.device_model }} (${{ github.event.inputs.device_csc }}) processed"
-        echo "✓ Custom ROM downloaded and decompressed"
-        echo "✓ New super.img created successfully"
+        echo "✓ Stock firmware processed for ${{ github.event.inputs.device_model }} (${{ github.event.inputs.device_csc }})"
+        echo "✓ Custom ROM integrated"
+        echo "✓ New super.img created and packaged"
         echo ""
         echo "Files available in artifacts:"
         echo "- repacked_super.img (for Heimdall/fastboot)"
         echo "- repacked_super.tar (for Odin)"
-        echo ""
-        echo "Flash using:"
-        echo "1. Heimdall (Linux): heimdall flash --SUPER repacked_super.img"
-        echo "2. Odin (Windows): Flash repacked_super.tar to the AP slot"
         echo ""
         echo "⚠️  Important: Always backup your device before flashing!"
         echo "======================================================="
