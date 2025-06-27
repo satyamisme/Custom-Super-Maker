@@ -1,10 +1,10 @@
-name: Android Super Partition Repack (Final, Reliable Method)
+name: Android Super Partition Repack (Optimized)
 
 on:
   workflow_dispatch:
     inputs:
       stock_firmware_url:
-        description: 'URL to the stock firmware (Direct HTTP, MEGA.nz, etc.). Find the real link manually.'
+        description: 'URL to the stock firmware (Direct HTTP, MEGA.nz, etc.).'
         required: true
         type: string
       custom_system_url:
@@ -32,10 +32,10 @@ on:
         type: boolean
         default: false
       purge_all:
-        description: 'Purge repacksuper directory (-p flag)'
+        description: 'Purge repacksuper directory after use (-p flag)'
         required: false
         type: boolean
-        # It's highly recommended to keep this true to clean up unpacked partitions
+        # Recommended to keep this true to save space and prevent artifact issues.
         default: true
 
 jobs:
@@ -63,10 +63,14 @@ jobs:
           megatools
         echo "✓ Dependencies installed."
 
-    - name: Verify repacksuper.sh exists
+    - name: Verify and Prepare Script
       run: |
         if [ ! -f "./repacksuper.sh" ]; then echo "✗ Error: repacksuper.sh not found" && exit 1; fi
         chmod +x ./repacksuper.sh
+        # (Optional but recommended) Fix the script in-place to prevent future errors
+        echo "==> Patching repacksuper.sh for robustness..."
+        sed -i '13s/\[ ! \$NO_COLOR \]/\[ ! "\$NO_COLOR" \]/' ./repacksuper.sh
+        sed -i '13s/\[ \$TERM != "dumb" \]/\[ "\$TERM" != "dumb" \]/' ./repacksuper.sh
 
     - name: Create working directory
       run: mkdir -p work
@@ -114,7 +118,7 @@ jobs:
         
         if [ ! -f "stock_super.img" ]; then echo "✗ Error: Failed to create raw stock_super.img." && exit 1; fi
         echo "✓ stock_super.img prepared successfully! All intermediate files cleaned up."
-        df -h . # Check disk space
+        df -h .
 
     - name: Download and Prepare Custom system.img
       run: |
@@ -129,7 +133,6 @@ jobs:
           *"gzip compressed data"*)    mv custom_rom_package custom_system.img.gz && gunzip custom_system.img.gz ;;
           *"Zip archive data"*)
             unzip -o custom_rom_package system.img || unzip -o custom_rom_package system.raw.img
-            # Clean up the downloaded zip immediately
             rm custom_rom_package
             SYSTEM_IMG_FILE=$(find . -maxdepth 1 -name "system.img" -o -name "system.raw.img" | head -n 1)
             if [ -z "$SYSTEM_IMG_FILE" ]; then echo "✗ Error: system.img not found in ZIP." && ls -lR && exit 1; fi
@@ -138,33 +141,37 @@ jobs:
           *"ext4 filesystem data"*)    mv custom_rom_package custom_system.img ;;
           *)                            rm custom_rom_package; echo "✗ Error: Unsupported file type: $FILE_TYPE" && exit 1 ;;
         esac
-        # Clean up the original package if it wasn't already handled
+        
         rm -f custom_rom_package
         if [ ! -f "custom_system.img" ]; then echo "✗ Error: custom_system.img not created." && exit 1; fi
         echo "✓ Custom system.img prepared successfully! Downloaded package cleaned up."
-        df -h . # Check disk space
+        df -h .
 
     - name: Prepare repacksuper.sh flags
       id: prepare_flags
       run: |
-        FLAGS=""
+        # Start with the mandatory -r flag for the working directory (absolute path)
+        FLAGS="-r $(pwd)/work"
+        
         if [ "${{ github.event.inputs.empty_product }}" == "true" ]; then FLAGS="$FLAGS -e"; fi
         if [ "${{ github.event.inputs.empty_system_ext }}" == "true" ]; then FLAGS="$FLAGS -x"; fi
         if [ "${{ github.event.inputs.silent_mode }}" == "true" ]; then FLAGS="$FLAGS -s"; fi
         if [ "${{ github.event.inputs.writable }}" == "true" ]; then FLAGS="$FLAGS -w"; fi
         if [ "${{ github.event.inputs.purge_all }}" == "true" ]; then FLAGS="$FLAGS -p"; fi
+        
         echo "flags=$FLAGS" >> $GITHUB_OUTPUT
 
     - name: Run repacksuper.sh
       run: |
-        cd work
+        echo "==> Verifying input files exist before running script..."
+        ls -lh work/
+        
         echo "==> Running repacksuper.sh with flags: ${{ steps.prepare_flags.outputs.flags }}"
-        ../repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} -r "$(pwd)" stock_super.img custom_system.img repacked_super.img
+        # Run from the repo root. Provide the full path to the files for the script.
+        ./repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} work/stock_super.img work/custom_system.img work/repacked_super.img
+        
         echo "==> Repacking finished. Cleaning up original super images..."
-        # The script may unpack these, so we delete them after it has run
-        rm stock_super.img custom_system.img
-        # The -p flag in the script should handle the unpacked directory, which is a huge space saver.
-        df -h . # Check disk space
+        rm -f work/stock_super.img work/custom_system.img
 
     - name: Verify output and Create Tarball
       run: |
@@ -184,10 +191,17 @@ jobs:
           work/repacked_super.tar
         retention-days: 7
 
-    # Optional: If you only need the tar, you can add another cleanup step
-    - name: Final Cleanup
-      if: always() # Run this step even if previous steps fail, to aid in debugging
+    - name: Final Cleanup and Space Check
+      if: always()
       run: |
         echo "==> Final disk space usage in working directory:"
         df -h work/
         ls -lh work/
+
+    - name: Upload Logs on Failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: failure-logs
+        path: work/
+        retention-days: 1
