@@ -1,17 +1,21 @@
-name: Android Super Partition Repack (Robust & Cached)
+# A descriptive name for the workflow, shown in the GitHub Actions UI.
+name: Android Super Partition Repack (Space-Efficient & Cached)
 
+# This section defines how the workflow is triggered.
 on:
+  # 'workflow_dispatch' allows you to run this workflow manually from the
+  # "Actions" tab in your GitHub repository.
   workflow_dispatch:
+    # 'inputs' defines the parameters you can provide when running the workflow manually.
     inputs:
       stock_firmware_url:
-        description: 'URL to the stock firmware (Direct, MEGA, GitHub Release recommended)'
+        description: 'URL to the stock firmware (Direct HTTP, MEGA.nz, etc.).'
         required: true
         type: string
       custom_system_url:
         description: 'Custom ROM download URL (.img, .img.xz, .img.gz, .zip supported)'
         required: true
         type: string
-      # ... (rest of your inputs are fine) ...
       empty_product:
         description: 'Use empty product.img (-e flag)'
         required: false
@@ -23,7 +27,7 @@ on:
         type: boolean
         default: false
       silent_mode:
-        description: 'Silent mode (-s flag)'
+        description: 'Silent mode for the script (-s flag)'
         required: false
         type: boolean
         default: true
@@ -34,112 +38,136 @@ on:
         default: false
       purge_all:
         description: 'Purge repacksuper directory after use (-p flag)'
+        # Defaulting to true is a good practice for saving space and ensuring clean runs.
         required: false
         type: boolean
         default: true
 
+# A workflow is made up of one or more 'jobs'. This job is named 'repack-super'.
 jobs:
   repack-super:
+    # Specifies the type of machine to run the job on. 'ubuntu-latest' is a standard Linux environment.
     runs-on: ubuntu-latest
 
+    # 'steps' are a sequence of tasks that will be executed as part of the job.
     steps:
+    # Step 1: Check out the repository code so the runner can access it.
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    # Step 2: Install all necessary system packages.
     - name: Install Dependencies
       run: |
         sudo apt-get update
+        # Install all tools needed for downloading, unpacking, and converting image files.
+        # 'megatools' is included specifically for handling MEGA.nz links.
         sudo apt-get install -y android-sdk-libsparse-utils tar xz-utils liblz4-tool unzip gzip file wget curl megatools
 
+    # Step 3: Ensure the main script exists and has execute permissions.
     - name: Verify and Prepare Script
       run: |
         if [ ! -f "./repacksuper.sh" ]; then echo "✗ Error: repacksuper.sh not found" && exit 1; fi
         chmod +x ./repacksuper.sh
 
+    # Step 4: Create a dedicated directory for all temporary files.
     - name: Create working directory
       run: mkdir -p work
 
-    # --- CACHING AND DOWNLOAD LOGIC ---
+    # Step 5: Implement caching for the large stock firmware.
+    # This significantly speeds up re-runs with the same firmware URL.
     - name: Cache Stock Firmware
       id: cache-stock
       uses: actions/cache@v4
       with:
+        # The path to the file we want to cache.
         path: work/stock_firmware.zip
-        key: ${{ runner.os }}-stock-${{ hashFiles(github.event.inputs.stock_firmware_url) }}
+        # The cache key. If a cache with this exact key exists, it will be restored.
+        # It's a combination of the OS and a hash of the firmware URL.
+        # If the URL changes, the hash changes, creating a new cache entry.
+        key: ${{ runner.os }}-stock-${{ hash(github.event.inputs.stock_firmware_url) }}
 
+    # Step 6: Download the stock firmware (if not cached) and extract super.img.
     - name: Download and Extract Stock Firmware
       run: |
         cd work
         FIRMWARE_URL="${{ github.event.inputs.stock_firmware_url }}"
         
-        # Download only if the file wasn't restored from cache
+        # This 'if' block checks the output of the caching step.
+        # It only runs if the cache was NOT found.
         if [ "${{ steps.cache-stock.outputs.cache-hit }}" != 'true' ]; then
           echo "==> No cache hit. Downloading stock firmware..."
-          # Download logic with retries
+          # Check if the URL is for MEGA.nz and use the appropriate tool.
           if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then
-            megadl "$FIRMWARE_URL" -o stock_firmware.zip
+            # 'megadl' is specifically for MEGA links.
+            megadl -o stock_firmware.zip "$FIRMWARE_URL"
           else
-            wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+            # For all other links, use 'wget' with robust options.
+            wget --user-agent="Mozilla/5.0" \
                  --content-disposition -O stock_firmware.zip \
                  --tries=5 --wait=10 \
                  "$FIRMWARE_URL"
           fi
         else
-            echo "==> Stock firmware cache restored successfully."
+            echo "==> Stock firmware cache was successfully restored."
         fi
         
-        if [ ! -f "stock_firmware.zip" ]; then echo "✗ CRITICAL ERROR: Failed to download/find stock firmware." && exit 1; fi
+        if [ ! -f "stock_firmware.zip" ]; then echo "✗ CRITICAL ERROR: Failed to download or find stock firmware." && exit 1; fi
         
-        echo "✓ Stock firmware ready: stock_firmware.zip"
+        echo "✓ Stock firmware is ready: stock_firmware.zip"
         
-        # Unzip and clean the archive immediately after use
+        # Unzip the large archive to get the firmware parts.
         unzip -o "stock_firmware.zip"
-        # Don't delete the zip yet, the cache needs it. It will be cleaned up by the runner.
         
         AP_FILE=$(find . -name "AP_*.tar.md5" | head -n 1)
         if [ -z "$AP_FILE" ]; then echo "✗ Error: AP file not found." && ls -lR && exit 1; fi
         
-        tar -xvf "$AP_FILE" super.img.lz4
-        rm "$AP_FILE" # Clean up the huge AP file
-        rm -f BL_* CP_* HOME_CSC_* CSC_* # Clean up other firmware parts
+        # Extract ONLY the super image to save space and time.
+        # Some firmware use super.img.lz4, others use super.img.sparse.lz4. A wildcard is safer.
+        tar -xvf "$AP_FILE" --wildcards '*super.img*.lz4'
+        # Immediately delete the huge AP file to free up gigabytes of space.
+        rm "$AP_FILE"
+        # Also delete the other large firmware parts that are not needed.
+        rm -f BL_* CP_* HOME_CSC_* CSC_*
         
-        lz4 -d super.img.lz4 stock_super_sparse.img
-        rm super.img.lz4
+        SUPER_LZ4=$(ls *super.img*.lz4 | head -n 1)
+        # Decompress the lz4 file to get the sparse image.
+        lz4 -d "$SUPER_LZ4" stock_super_sparse.img
+        # Immediately delete the compressed lz4 file.
+        rm "$SUPER_LZ4"
         
         if [ ! -f "stock_super_sparse.img" ]; then echo "✗ Error: Failed to create sparse stock_super.img." && exit 1; fi
         echo "✓ stock_super_sparse.img prepared successfully!"
 
-    # ... The rest of your workflow from the previous correct version ...
-    # (Download Custom, Prepare Flags, Run Script, Tarball, Upload Artifacts)
-    # The following steps are unchanged and correct.
-
+    # Step 7: Download the custom ROM and decompress it.
     - name: Download and Prepare Custom system.img
       run: |
-        # This step is correct as it was
         cd work
         wget -O custom_rom_package "${{ github.event.inputs.custom_system_url }}"
         if [ ! -s "custom_rom_package" ]; then echo "✗ Error: Failed to download custom ROM." && exit 1; fi
         
+        # Use the 'file' command to reliably detect the compression type.
         FILE_TYPE=$(file -b custom_rom_package)
         echo "File type detected: $FILE_TYPE"
         case "$FILE_TYPE" in
-          *"XZ compressed data"*)      mv custom_rom_package custom_system.img.xz && unxz custom_system.img.xz ;;
-          *"gzip compressed data"*)    mv custom_rom_package custom_system.img.gz && gunzip custom_system.img.gz ;;
+          # Handle different formats and clean up the downloaded package immediately.
+          *"XZ compressed data"*)      mv custom_rom_package c.img.xz && unxz c.img.xz && mv c.img custom_system.img ;;
+          *"gzip compressed data"*)    mv custom_rom_package c.img.gz && gunzip c.img.gz && mv c.img custom_system.img ;;
           *"Zip archive data"*)
-            unzip -o custom_rom_package system.img || unzip -o custom_rom_package system.raw.img
+            unzip -o custom_rom_package
             rm custom_rom_package
             SYSTEM_IMG_FILE=$(find . -maxdepth 1 -name "system.img" -o -name "system.raw.img" | head -n 1)
             if [ -z "$SYSTEM_IMG_FILE" ]; then echo "✗ Error: system.img not found in ZIP." && ls -lR && exit 1; fi
             mv "$SYSTEM_IMG_FILE" custom_system.img ;;
+          # Convert sparse images to raw, then clean up the original sparse file.
           *"Android sparse image"*)    mv custom_rom_package c_sparse.img && simg2img c_sparse.img custom_system.img && rm c_sparse.img ;;
           *"ext4 filesystem data"*)    mv custom_rom_package custom_system.img ;;
           *)                            rm custom_rom_package; echo "✗ Error: Unsupported file type: $FILE_TYPE" && exit 1 ;;
         esac
         
-        rm -f custom_rom_package
         if [ ! -f "custom_system.img" ]; then echo "✗ Error: custom_system.img not created." && exit 1; fi
         echo "✓ Custom system.img prepared successfully! Downloaded package cleaned up."
 
+    # Step 8: Assemble all the chosen command-line flags for the main script.
     - name: Prepare repacksuper.sh flags
       id: prepare_flags
       run: |
@@ -151,20 +179,27 @@ jobs:
         if [ "${{ github.event.inputs.writable }}" == "true" ]; then FLAGS="$FLAGS -w"; fi
         echo "flags=$FLAGS" >> $GITHUB_OUTPUT
 
+    # Step 9: Execute the main repack script with the prepared flags and file paths.
     - name: Run repacksuper.sh
       run: |
         echo "==> Running repacksuper.sh with flags: ${{ steps.prepare_flags.outputs.flags }}"
+        # Pass the smaller SPARSE image to the script to save space during the conversion to a raw image inside the script.
+        # This is a key space-saving measure.
         ./repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} work/stock_super_sparse.img work/custom_system.img work/repacked_super.img
         
         echo "==> Repacking finished. Cleaning up original images..."
+        # After the script runs, the original images are no longer needed. Delete them to save space.
         rm -f work/stock_super_sparse.img work/custom_system.img
 
+    # Step 10: Verify the final output and package it for Odin.
     - name: Verify output and Create Tarball
       run: |
         cd work
         if [ ! -f "repacked_super.img" ]; then echo "✗ Error: repacked_super.img not found." && ls -la && exit 1; fi
+        # Create the .tar archive needed for flashing with Odin on Windows.
         tar -cvf repacked_super.tar repacked_super.img
 
+    # Step 11: Upload the final repacked images as workflow artifacts.
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -174,6 +209,8 @@ jobs:
           work/repacked_super.tar
         retention-days: 7
 
+    # Step 12: A final check to see disk space usage, especially useful for debugging.
+    # This 'always()' condition ensures it runs even if a previous step failed.
     - name: Final Cleanup and Space Check
       if: always()
       run: |
@@ -181,6 +218,7 @@ jobs:
         df -h work/
         ls -lh work/
 
+    # Step 13: If the workflow fails at any point, upload the entire 'work' directory for debugging.
     - name: Upload Logs on Failure
       if: failure()
       uses: actions/upload-artifact@v4
