@@ -1,4 +1,4 @@
-name: Android Super Partition Repack (Optimized)
+name: Android Super Partition Repack (Optimized & Corrected)
 
 on:
   workflow_dispatch:
@@ -35,7 +35,6 @@ on:
         description: 'Purge repacksuper directory after use (-p flag)'
         required: false
         type: boolean
-        # Recommended to keep this true to save space and prevent artifact issues.
         default: true
 
 jobs:
@@ -67,10 +66,6 @@ jobs:
       run: |
         if [ ! -f "./repacksuper.sh" ]; then echo "✗ Error: repacksuper.sh not found" && exit 1; fi
         chmod +x ./repacksuper.sh
-        # (Optional but recommended) Fix the script in-place to prevent future errors
-        echo "==> Patching repacksuper.sh for robustness..."
-        sed -i '13s/\[ ! \$NO_COLOR \]/\[ ! "\$NO_COLOR" \]/' ./repacksuper.sh
-        sed -i '13s/\[ \$TERM != "dumb" \]/\[ "\$TERM" != "dumb" \]/' ./repacksuper.sh
 
     - name: Create working directory
       run: mkdir -p work
@@ -89,35 +84,28 @@ jobs:
         
         FIRMWARE_ZIP=$(ls *.zip | head -n 1)
         if [ -z "$FIRMWARE_ZIP" ]; then echo "✗ CRITICAL ERROR: Failed to download stock firmware." && exit 1; fi
-        echo "✓ Stock firmware downloaded: $FIRMWARE_ZIP"
         
         # Unzip and clean
         unzip -o "$FIRMWARE_ZIP"
-        echo "==> Deleting stock firmware zip to save space..."
         rm "$FIRMWARE_ZIP"
         
         AP_FILE=$(find . -name "AP_*.tar.md5" | head -n 1)
         if [ -z "$AP_FILE" ]; then echo "✗ Error: AP file not found." && ls -lR && exit 1; fi
-        echo "✓ Found AP file: $AP_FILE"
         
         # Extract super.img.lz4 and clean up the large AP file
         tar -xvf "$AP_FILE" super.img.lz4
-        echo "==> Deleting AP file to save space..."
         rm "$AP_FILE"
-        # Also remove other large firmware components if they exist
         rm -f BL_* CP_* HOME_CSC_* CSC_*
         
         if [ ! -f "super.img.lz4" ]; then echo "✗ Error: Could not extract super.img.lz4." && exit 1; fi
         
-        # Decompress and convert to raw, cleaning up each intermediate file
+        # Decompress to a sparse image, which is what the script expects.
+        # DO NOT convert to raw here.
         lz4 -d super.img.lz4 stock_super_sparse.img
         rm super.img.lz4
         
-        simg2img stock_super_sparse.img stock_super.img
-        rm stock_super_sparse.img
-        
-        if [ ! -f "stock_super.img" ]; then echo "✗ Error: Failed to create raw stock_super.img." && exit 1; fi
-        echo "✓ stock_super.img prepared successfully! All intermediate files cleaned up."
+        if [ ! -f "stock_super_sparse.img" ]; then echo "✗ Error: Failed to create sparse stock_super.img." && exit 1; fi
+        echo "✓ stock_super_sparse.img prepared successfully! This is the format the script needs."
         df -h .
 
     - name: Download and Prepare Custom system.img
@@ -145,20 +133,16 @@ jobs:
         rm -f custom_rom_package
         if [ ! -f "custom_system.img" ]; then echo "✗ Error: custom_system.img not created." && exit 1; fi
         echo "✓ Custom system.img prepared successfully! Downloaded package cleaned up."
-        df -h .
 
     - name: Prepare repacksuper.sh flags
       id: prepare_flags
       run: |
-        # Start with the mandatory -r flag for the working directory (absolute path)
         FLAGS="-r $(pwd)/work"
-        
+        if [ "${{ github.event.inputs.silent_mode }}" == "true" ]; then FLAGS="$FLAGS -s"; fi
+        if [ "${{ github.event.inputs.purge_all }}" == "true" ]; then FLAGS="$FLAGS -p"; fi
         if [ "${{ github.event.inputs.empty_product }}" == "true" ]; then FLAGS="$FLAGS -e"; fi
         if [ "${{ github.event.inputs.empty_system_ext }}" == "true" ]; then FLAGS="$FLAGS -x"; fi
-        if [ "${{ github.event.inputs.silent_mode }}" == "true" ]; then FLAGS="$FLAGS -s"; fi
         if [ "${{ github.event.inputs.writable }}" == "true" ]; then FLAGS="$FLAGS -w"; fi
-        if [ "${{ github.event.inputs.purge_all }}" == "true" ]; then FLAGS="$FLAGS -p"; fi
-        
         echo "flags=$FLAGS" >> $GITHUB_OUTPUT
 
     - name: Run repacksuper.sh
@@ -167,11 +151,11 @@ jobs:
         ls -lh work/
         
         echo "==> Running repacksuper.sh with flags: ${{ steps.prepare_flags.outputs.flags }}"
-        # Run from the repo root. Provide the full path to the files for the script.
-        ./repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} work/stock_super.img work/custom_system.img work/repacked_super.img
+        # Pass the SPARSE image to the script, as it expects.
+        ./repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} work/stock_super_sparse.img work/custom_system.img work/repacked_super.img
         
-        echo "==> Repacking finished. Cleaning up original super images..."
-        rm -f work/stock_super.img work/custom_system.img
+        echo "==> Repacking finished. Cleaning up original images..."
+        rm -f work/stock_super_sparse.img work/custom_system.img
 
     - name: Verify output and Create Tarball
       run: |
