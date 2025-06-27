@@ -1,4 +1,4 @@
-name: Android Super Partition Repack (Correct Method)
+name: Android Super Partition Repack (Definitive Method)
 
 on:
   workflow_dispatch:
@@ -67,19 +67,19 @@ jobs:
           gzip \
           file \
           wget \
-          curl
+          curl \
+          git
         
-        # Create a Python virtual environment, as shown in your script's logic
         echo "==> Creating Python virtual environment..."
         python -m venv venv
         
-        # Install samloader into the virtual environment
-        echo "==> Installing samloader into venv..."
-        venv/bin/python -m pip install samloader
+        # Install samloader directly from the GitHub repository, as you instructed.
+        echo "==> Installing samloader from git..."
+        venv/bin/python -m pip install git+https://github.com/samloader/samloader.git
         
         # Verify the installation
         if [ ! -f "venv/bin/samloader" ]; then
-          echo "✗ CRITICAL ERROR: samloader failed to install into the virtual environment."
+          echo "✗ CRITICAL ERROR: samloader failed to install from the git repository."
           exit 1
         fi
         echo "✓ samloader installed successfully."
@@ -120,7 +120,6 @@ jobs:
         
         if [ ! -f "stock_super.img" ]; then echo "✗ Error: Failed to create raw stock_super.img" && exit 1; fi
         echo "✓ stock_super.img prepared successfully!"
-        ls -lh stock_super.img
 
     - name: Download and Prepare Custom system.img
       run: |
