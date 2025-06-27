@@ -35,7 +35,8 @@ on:
         description: 'Purge repacksuper directory (-p flag)'
         required: false
         type: boolean
-        default: false
+        # It's highly recommended to keep this true to clean up unpacked partitions
+        default: true
 
 jobs:
   repack-super:
@@ -59,7 +60,7 @@ jobs:
           file \
           wget \
           curl \
-          megatools # For MEGA.nz support
+          megatools
         echo "✓ Dependencies installed."
 
     - name: Verify repacksuper.sh exists
@@ -75,46 +76,49 @@ jobs:
         cd work
         FIRMWARE_URL="${{ github.event.inputs.stock_firmware_url }}"
         
-        # Check if the URL is a MEGA.nz link and use the correct tool
+        # Download
         if [[ $FIRMWARE_URL == *"mega.nz"* ]]; then
-          echo "==> MEGA.nz link detected. Downloading with megatools..."
           megadl "$FIRMWARE_URL"
         else
-          echo "==> Direct HTTP link detected. Downloading with wget..."
-          # Use --content-disposition to handle generic server links that don't have a filename in the URL
           wget --content-disposition "$FIRMWARE_URL"
         fi
         
-        # Verify that a file was downloaded, regardless of the method
-        if ! ls *.zip 1> /dev/null 2>&1; then
-          echo "✗ CRITICAL ERROR: Failed to download stock firmware, or the downloaded file was not a .zip archive."
-          exit 1
-        fi
-        
         FIRMWARE_ZIP=$(ls *.zip | head -n 1)
-        echo "✓ Stock firmware downloaded successfully: $FIRMWARE_ZIP"
+        if [ -z "$FIRMWARE_ZIP" ]; then echo "✗ CRITICAL ERROR: Failed to download stock firmware." && exit 1; fi
+        echo "✓ Stock firmware downloaded: $FIRMWARE_ZIP"
         
-        echo "==> Unzipping firmware package..."
+        # Unzip and clean
         unzip -o "$FIRMWARE_ZIP"
+        echo "==> Deleting stock firmware zip to save space..."
+        rm "$FIRMWARE_ZIP"
         
         AP_FILE=$(find . -name "AP_*.tar.md5" | head -n 1)
-        if [ -z "$AP_FILE" ]; then echo "✗ Error: AP file not found in the unzipped firmware." && ls -lR && exit 1; fi
+        if [ -z "$AP_FILE" ]; then echo "✗ Error: AP file not found." && ls -lR && exit 1; fi
         echo "✓ Found AP file: $AP_FILE"
         
-        echo "==> Extracting and preparing super.img..."
+        # Extract super.img.lz4 and clean up the large AP file
         tar -xvf "$AP_FILE" super.img.lz4
-        if [ ! -f "super.img.lz4" ]; then echo "✗ Error: Could not extract super.img.lz4 from the AP file." && exit 1; fi
+        echo "==> Deleting AP file to save space..."
+        rm "$AP_FILE"
+        # Also remove other large firmware components if they exist
+        rm -f BL_* CP_* HOME_CSC_* CSC_*
         
+        if [ ! -f "super.img.lz4" ]; then echo "✗ Error: Could not extract super.img.lz4." && exit 1; fi
+        
+        # Decompress and convert to raw, cleaning up each intermediate file
         lz4 -d super.img.lz4 stock_super_sparse.img
+        rm super.img.lz4
+        
         simg2img stock_super_sparse.img stock_super.img
+        rm stock_super_sparse.img
         
         if [ ! -f "stock_super.img" ]; then echo "✗ Error: Failed to create raw stock_super.img." && exit 1; fi
-        echo "✓ stock_super.img prepared successfully!"
+        echo "✓ stock_super.img prepared successfully! All intermediate files cleaned up."
+        df -h . # Check disk space
 
     - name: Download and Prepare Custom system.img
       run: |
         cd work
-        echo "==> Downloading custom ROM package..."
         wget -O custom_rom_package "${{ github.event.inputs.custom_system_url }}"
         if [ ! -s "custom_rom_package" ]; then echo "✗ Error: Failed to download custom ROM." && exit 1; fi
         
@@ -124,16 +128,21 @@ jobs:
           *"XZ compressed data"*)      mv custom_rom_package custom_system.img.xz && unxz custom_system.img.xz ;;
           *"gzip compressed data"*)    mv custom_rom_package custom_system.img.gz && gunzip custom_system.img.gz ;;
           *"Zip archive data"*)
-            unzip -o custom_rom_package
+            unzip -o custom_rom_package system.img || unzip -o custom_rom_package system.raw.img
+            # Clean up the downloaded zip immediately
+            rm custom_rom_package
             SYSTEM_IMG_FILE=$(find . -maxdepth 1 -name "system.img" -o -name "system.raw.img" | head -n 1)
             if [ -z "$SYSTEM_IMG_FILE" ]; then echo "✗ Error: system.img not found in ZIP." && ls -lR && exit 1; fi
             mv "$SYSTEM_IMG_FILE" custom_system.img ;;
-          *"Android sparse image"*)    mv custom_rom_package c_sparse.img && simg2img c_sparse.img custom_system.img ;;
+          *"Android sparse image"*)    mv custom_rom_package c_sparse.img && simg2img c_sparse.img custom_system.img && rm c_sparse.img ;;
           *"ext4 filesystem data"*)    mv custom_rom_package custom_system.img ;;
-          *)                            echo "✗ Error: Unsupported file type: $FILE_TYPE" && exit 1 ;;
+          *)                            rm custom_rom_package; echo "✗ Error: Unsupported file type: $FILE_TYPE" && exit 1 ;;
         esac
+        # Clean up the original package if it wasn't already handled
+        rm -f custom_rom_package
         if [ ! -f "custom_system.img" ]; then echo "✗ Error: custom_system.img not created." && exit 1; fi
-        echo "✓ Custom system.img prepared successfully!"
+        echo "✓ Custom system.img prepared successfully! Downloaded package cleaned up."
+        df -h . # Check disk space
 
     - name: Prepare repacksuper.sh flags
       id: prepare_flags
@@ -151,6 +160,11 @@ jobs:
         cd work
         echo "==> Running repacksuper.sh with flags: ${{ steps.prepare_flags.outputs.flags }}"
         ../repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} -r "$(pwd)" stock_super.img custom_system.img repacked_super.img
+        echo "==> Repacking finished. Cleaning up original super images..."
+        # The script may unpack these, so we delete them after it has run
+        rm stock_super.img custom_system.img
+        # The -p flag in the script should handle the unpacked directory, which is a huge space saver.
+        df -h . # Check disk space
 
     - name: Verify output and Create Tarball
       run: |
@@ -170,22 +184,10 @@ jobs:
           work/repacked_super.tar
         retention-days: 7
 
-    - name: Upload Logs on Failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: failure-logs
-        path: work/
-        retention-days: 1
-
-    - name: Display Completion Message
+    # Optional: If you only need the tar, you can add another cleanup step
+    - name: Final Cleanup
+      if: always() # Run this step even if previous steps fail, to aid in debugging
       run: |
-        echo "======================================================="
-        echo "  Android Super Partition Repack Complete"
-        echo "======================================================="
-        echo "✓ Stock firmware downloaded from your URL and processed"
-        echo "✓ Custom ROM integrated"
-        echo "✓ New super.img created and packaged"
-        echo ""
-        echo "Download the 'repacked-super-img' artifact below."
-        echo "======================================================="
+        echo "==> Final disk space usage in working directory:"
+        df -h work/
+        ls -lh work/
