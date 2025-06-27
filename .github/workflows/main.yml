@@ -1,0 +1,242 @@
+name: Android Super Partition Repack
+
+on:
+  workflow_dispatch:
+    inputs:
+      stock_super_url:
+        description: 'Stock super.img download URL (must be wget-able)'
+        required: true
+        type: string
+      custom_system_url:
+        description: 'Custom ROM system.img download URL (must be wget-able)'
+        required: true
+        type: string
+      empty_product:
+        description: 'Use empty product.img (-e flag)'
+        required: false
+        type: boolean
+        default: false
+      empty_system_ext:
+        description: 'Use empty system_ext.img (-x flag)'
+        required: false
+        type: boolean
+        default: false
+      silent_mode:
+        description: 'Silent mode (-s flag)'
+        required: false
+        type: boolean
+        default: true
+      writable:
+        description: 'Make partitions writable (-w flag)'
+        required: false
+        type: boolean
+        default: false
+      purge_all:
+        description: 'Purge repacksuper directory (-p flag)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  repack-super:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install required dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          android-tools-fsutils \
+          tar \
+          xz-utils \
+          liblz4-tool \
+          unzip \
+          gzip \
+          jq \
+          file \
+          wget \
+          curl
+        
+        # Install simg2img if not available
+        if ! command -v simg2img &> /dev/null; then
+          echo "Installing simg2img from android-tools-fsutils"
+          sudo apt-get install -y android-sdk-libsparse-utils || true
+        fi
+        
+        # Verify tools are available
+        echo "Checking required tools..."
+        for tool in simg2img tar unxz lz4 unzip gzip jq file wget; do
+          if command -v $tool &> /dev/null; then
+            echo "✓ $tool is available"
+          else
+            echo "✗ $tool is missing"
+            exit 1
+          fi
+        done
+
+    - name: Verify repacksuper.sh exists
+      run: |
+        if [ ! -f "./repacksuper.sh" ]; then
+          echo "Error: repacksuper.sh not found in repository root"
+          echo "Please ensure the script is present in the repository"
+          exit 1
+        fi
+        chmod +x ./repacksuper.sh
+
+    - name: Create working directory
+      run: |
+        mkdir -p work
+        cd work
+
+    - name: Download stock super.img
+      run: |
+        cd work
+        echo "Downloading stock super.img from: ${{ github.event.inputs.stock_super_url }}"
+        wget -O stock_super.img "${{ github.event.inputs.stock_super_url }}"
+        
+        # Verify download
+        if [ ! -f "stock_super.img" ]; then
+          echo "Error: Failed to download stock super.img"
+          exit 1
+        fi
+        
+        echo "Stock super.img downloaded successfully"
+        ls -lh stock_super.img
+
+    - name: Download custom system.img
+      run: |
+        cd work
+        echo "Downloading custom system.img from: ${{ github.event.inputs.custom_system_url }}"
+        wget -O custom_system.img "${{ github.event.inputs.custom_system_url }}"
+        
+        # Verify download
+        if [ ! -f "custom_system.img" ]; then
+          echo "Error: Failed to download custom system.img"
+          exit 1
+        fi
+        
+        echo "Custom system.img downloaded successfully"
+        ls -lh custom_system.img
+
+    - name: Prepare repacksuper.sh flags
+      id: prepare_flags
+      run: |
+        FLAGS=""
+        
+        if [ "${{ github.event.inputs.empty_product }}" == "true" ]; then
+          FLAGS="$FLAGS -e"
+        fi
+        
+        if [ "${{ github.event.inputs.empty_system_ext }}" == "true" ]; then
+          FLAGS="$FLAGS -x"
+        fi
+        
+        if [ "${{ github.event.inputs.silent_mode }}" == "true" ]; then
+          FLAGS="$FLAGS -s"
+        fi
+        
+        if [ "${{ github.event.inputs.writable }}" == "true" ]; then
+          FLAGS="$FLAGS -w"
+        fi
+        
+        if [ "${{ github.event.inputs.purge_all }}" == "true" ]; then
+          FLAGS="$FLAGS -p"
+        fi
+        
+        echo "flags=$FLAGS" >> $GITHUB_OUTPUT
+        echo "Prepared flags: $FLAGS"
+
+    - name: Run repacksuper.sh
+      run: |
+        cd work
+        echo "Running repacksuper.sh with flags: ${{ steps.prepare_flags.outputs.flags }}"
+        echo "Source: stock_super.img"
+        echo "New system: custom_system.img"
+        echo "Output: repacked_super.img"
+        
+        # Set working directory for the script
+        export WORK_DIR="$(pwd)"
+        
+        # Run the script
+        ../repacksuper.sh ${{ steps.prepare_flags.outputs.flags }} \
+          -r "$WORK_DIR" \
+          stock_super.img \
+          custom_system.img \
+          repacked_super.img
+        
+        echo "Repacksuper.sh completed"
+
+    - name: Verify output
+      run: |
+        cd work
+        if [ -f "repacked_super.img" ]; then
+          echo "✓ Repacked super.img created successfully"
+          ls -lh repacked_super.img
+          
+          # Check file type
+          file repacked_super.img
+          
+          # Calculate checksums
+          echo "MD5: $(md5sum repacked_super.img | cut -d' ' -f1)"
+          echo "SHA256: $(sha256sum repacked_super.img | cut -d' ' -f1)"
+        else
+          echo "✗ Error: repacked_super.img not found"
+          echo "Listing work directory contents:"
+          ls -la
+          exit 1
+        fi
+
+    - name: Create tar archive (optional)
+      run: |
+        cd work
+        if [ -f "repacked_super.img" ]; then
+          echo "Creating tar archive for Odin flashing..."
+          tar -cvf repacked_super.tar repacked_super.img
+          echo "Tar archive created: repacked_super.tar"
+          ls -lh repacked_super.tar
+        fi
+
+    - name: Upload repacked super.img as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: repacked-super-img
+        path: |
+          work/repacked_super.img
+          work/repacked_super.tar
+        retention-days: 7
+        compression-level: 0
+
+    - name: Upload logs and working files
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: repack-logs-and-files
+        path: |
+          work/repacksuper/
+        retention-days: 3
+        compression-level: 6
+
+    - name: Display completion message
+      run: |
+        echo "=========================================="
+        echo "Android Super Partition Repack Complete!"
+        echo "=========================================="
+        echo ""
+        echo "✓ Stock super.img downloaded and processed"
+        echo "✓ Custom system.img integrated"
+        echo "✓ New super.img created successfully"
+        echo ""
+        echo "Files available in artifacts:"
+        echo "- repacked_super.img (for Heimdall flashing)"
+        echo "- repacked_super.tar (for Odin flashing)"
+        echo ""
+        echo "Download the artifacts and flash using:"
+        echo "1. Heimdall (Linux): heimdall flash --SUPER repacked_super.img"
+        echo "2. Odin (Windows): Flash repacked_super.tar to AP slot"
+        echo ""
+        echo "⚠️  Important: Always backup your device before flashing!"
+        echo "⚠️  Ensure your device is in Download mode before flashing"
+        echo "=========================================="
