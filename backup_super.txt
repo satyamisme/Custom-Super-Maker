@@ -1,0 +1,8 @@
+1. Create a Backup directory on your SD card (using your phone's file manager)
+2. Get the SUPER parition blockdevice id: adb shell ls -l /dev/block/platform/bootdevice/by-name | grep super
+3. Get your SD card mount point: adb shell df | grep storage
+4. adb shell su - ; dd if=/dev/block/[SUPER_id] of=[SDCARD_mountpoint]/Backup/super.img
+
+If my case the final command looks like this: adb shell dd if=/dev/block/mmcblk0p43 of=/storage/79D5-EF30/Backup/super.img
+
+Then wait a very long time while it copies the data (there is no progress indicator of any kind). After it finishes you'll have a backup super.img in the Backup directory of your SD card.
