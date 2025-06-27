@@ -1,4 +1,4 @@
-name: Android Super Partition Repack (Definitive Method)
+name: Android Super Partition Repack (Corrected Download Logic)
 
 on:
   workflow_dispatch:
@@ -59,6 +59,7 @@ jobs:
         echo "==> Installing base OS dependencies..."
         sudo apt-get update
         sudo apt-get install -y \
+#          android-tools-fsutils \
           android-sdk-libsparse-utils \
           tar \
           xz-utils \
@@ -73,13 +74,11 @@ jobs:
         echo "==> Creating Python virtual environment..."
         python -m venv venv
         
-        # Install samloader directly from the GitHub repository, as you instructed.
         echo "==> Installing samloader from git..."
         venv/bin/python -m pip install git+https://github.com/samloader/samloader.git
         
-        # Verify the installation
         if [ ! -f "venv/bin/samloader" ]; then
-          echo "✗ CRITICAL ERROR: samloader failed to install from the git repository."
+          echo "✗ CRITICAL ERROR: samloader failed to install."
           exit 1
         fi
         echo "✓ samloader installed successfully."
@@ -95,9 +94,19 @@ jobs:
     - name: Download and Extract Stock Firmware
       run: |
         cd work
-        echo "==> Downloading latest stock firmware for Model: ${{ github.event.inputs.device_model }}, Region: ${{ github.event.inputs.device_csc }}"
-        # Run samloader from the virtual environment
-        ../venv/bin/samloader download -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" -V -O .
+        # STEP 1: Check for the latest firmware version first.
+        echo "==> Checking for the latest firmware version..."
+        LATEST_FW_VERSION=$(../venv/bin/samloader checkupdate -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}")
+        
+        if [ -z "$LATEST_FW_VERSION" ]; then
+          echo "✗ CRITICAL ERROR: Could not fetch the latest firmware version for ${{ github.event.inputs.device_model }}/${{ github.event.inputs.device_csc }}."
+          exit 1
+        fi
+        echo "✓ Latest firmware version found: $LATEST_FW_VERSION"
+        
+        # STEP 2: Use the fetched version string with the required -v flag to download.
+        echo "==> Downloading firmware version $LATEST_FW_VERSION..."
+        ../venv/bin/samloader download -m "${{ github.event.inputs.device_model }}" -r "${{ github.event.inputs.device_csc }}" -v "$LATEST_FW_VERSION" -O .
         
         FIRMWARE_ZIP=$(ls *.zip | head -n 1)
         if [ -z "$FIRMWARE_ZIP" ]; then echo "✗ Error: Firmware ZIP not found after download." && exit 1; fi
