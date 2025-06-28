@@ -87,7 +87,7 @@ Wipe data to avoid boot loops or soft-bricks.
 
 🖼️ How to Get the Download Links (Tutorial)
 
-Follow these example steps and screenshots to get the correct download links for both your stock firmware and custom ROM:
+Follow these example steps and screenshots to get the correct download links for your stock firmware:
 
 ![alt text](pic/pic1.png)
 
