@@ -80,7 +80,7 @@ jobs:
       run: |
         sudo apt-get update
         # Install only what's needed for building. Heimdall is NOT required.
-        sudo apt-get install -y android-sdk-libsparse-utils tar xz-utils liblz4-tool unzip gzip file wget curl megatools
+        sudo apt-get install -y android-sdk-libsparse-utils tar xz-utils liblz4-tool unzip gzip p7zip-full file wget curl megatools
 
     - name: Verify and Prepare Script
       run: |
@@ -149,6 +149,11 @@ jobs:
             unzip -o custom_rom_package ; rm custom_rom_package
             SYSTEM_IMG_FILE=$(find . -maxdepth 1 -name "system.img" -o -name "system.raw.img" | head -n 1)
             if [ -z "$SYSTEM_IMG_FILE" ]; then echo "✗ Error: system.img not found in ZIP." && exit 1; fi
+            mv "$SYSTEM_IMG_FILE" custom_system.img ;;
+          *"7z archive data"*)
+            7z x custom_rom_package ; rm custom_rom_package
+            SYSTEM_IMG_FILE=$(find . -maxdepth 1 -name "system.img" -o -name "system.raw.img" | head -n 1)
+            if [ -z "$SYSTEM_IMG_FILE" ]; then echo "✗ Error: system.img not found in 7z archive." && exit 1; fi
             mv "$SYSTEM_IMG_FILE" custom_system.img ;;
           *"Android sparse image"*)    mv custom_rom_package c_sparse.img && simg2img c_sparse.img custom_system.img && rm c_sparse.img ;;
           *"ext4 filesystem data"*)    mv custom_rom_package custom_system.img ;;
