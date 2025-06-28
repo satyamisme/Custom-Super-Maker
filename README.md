@@ -1,4 +1,4 @@
-🚀 Custom ROM Your New Samsung Laggy Budget Devices NOW
+# 🚀 Custom ROM Your New Samsung Laggy Budget Devices NOW
 
 Tired of your Samsung budget phone lagging like it’s stuck in molasses? This GitHub Actions workflow is your ticket to reviving devices like the Galaxy A04s, A05, A05s, A06, A16—or any Samsung phone with a super partition and Project Treble support (sorry A12 users, check compatibility first).
 
