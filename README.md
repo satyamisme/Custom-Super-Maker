@@ -67,9 +67,10 @@ Purge All: Deletes temporary files after the build to save space (enabled by def
 6. Flash the Repacked Super Image:
 
 Odin users: Extract repacked_super.tar and flash it using the AP slot.
+Bug: You need to change the repacked_super.img to super.img
 
 Heimdall users: Use the included heimdall_flash.sh script.
-
+(not test yet)
 
 
 7. Reboot to Recovery and Format Data:
